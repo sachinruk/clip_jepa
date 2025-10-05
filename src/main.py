@@ -29,6 +29,14 @@ def main(hyper_parameters_json: str):
     # Set environment variables
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+    # Empty torch cache before starting
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        logger.info("Cleared CUDA cache")
+    elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
+        torch.mps.empty_cache()
+        logger.info("Cleared MPS cache")
+
     # Create output directories
     hyper_parameters.output_dir.mkdir(parents=True, exist_ok=True)
     hyper_parameters.lora_config.lora_weight_path.mkdir(parents=True, exist_ok=True)
@@ -59,12 +67,12 @@ def main(hyper_parameters_json: str):
         hyper_parameters,
     )
 
-    # logger.info("Applying gradient mask to embedding weights...")
-    # embed_shape = model_components.model.get_input_embeddings().weight.shape
-    # grad_hook = model.GradMaskHook(
-    #     model_components.embed_start_token_id, model_components.embed_end_token_id, embed_shape
-    # )
-    # model.embedding_zero_grad(model_components.model, grad_hook)
+    logger.info("Applying gradient mask to embedding weights...")
+    embed_shape = model_components.model.get_input_embeddings().weight.shape
+    grad_hook = model.GradMaskHook(
+        model_components.embed_start_token_id, model_components.embed_end_token_id, embed_shape
+    )
+    model.embedding_zero_grad(model_components.model, grad_hook)
     initial_embed_params = (
         model_components.model.get_input_embeddings().weight[:, :10].clone().detach()
     )
