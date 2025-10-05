@@ -100,7 +100,8 @@ class CLIPJepaModel:
 
 
 def get_lora_model(
-    model: Qwen2_5_VLForConditionalGeneration, hyper_parameters: config.HyperParameters
+    model: Qwen2_5_VLForConditionalGeneration,
+    hyper_parameters: config.HyperParameters,
 ) -> Qwen2_5_VLForConditionalGeneration:
     lora_config = peft.LoraConfig(
         r=hyper_parameters.lora_config.lora_rank,
@@ -109,6 +110,7 @@ def get_lora_model(
         target_modules=hyper_parameters.lora_config.target_modules,
         use_dora=True,
         init_lora_weights="gaussian",
+        modules_to_save=hyper_parameters.lora_config.modules_to_save,
     )
     lora_model = peft.get_peft_model(model, lora_config)
     trainable_params, all_params = lora_model.get_nb_trainable_parameters()
@@ -116,3 +118,23 @@ def get_lora_model(
         f"Trainable portion: {trainable_params / all_params:.4f}, trainable params: {trainable_params}"
     )
     return lora_model
+
+
+class GradMaskHook:
+    def __init__(
+        self, embed_start_token_id: int, embed_end_token_id: int, embed_shape: tuple[int, int]
+    ):
+        self.embed_start_token_id = embed_start_token_id
+        self.embed_end_token_id = embed_end_token_id
+        self.mask = torch.zeros(embed_shape, dtype=torch.bool)
+        self.mask[embed_start_token_id] = True
+        self.mask[embed_end_token_id] = True
+
+    def __call__(self, grad: torch.Tensor) -> torch.Tensor:
+        return grad * self.mask.float()
+
+
+def embedding_zero_grad(lora_model: Qwen2_5_VLForConditionalGeneration, grad_hook: GradMaskHook):
+    embed = lora_model.get_input_embeddings()
+    embed.weight.requires_grad_(True)
+    embed.weight.register_hook(grad_hook)

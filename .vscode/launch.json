@@ -1,0 +1,32 @@
+{
+    "configurations": [
+        {
+            "name": "Train",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+            },
+            "justMyCode": false,
+            "program": "${workspaceFolder}/src/main.py",
+            "args": [
+                "--hyper-parameters-json",
+                "{\"debug\": true}"
+            ]
+        },
+        {
+            "name": "Current file",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+            },
+            "justMyCode": false,
+            "program": "${file}",
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

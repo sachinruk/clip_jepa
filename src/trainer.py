@@ -54,8 +54,6 @@ class CLIPJepaTrainer(L.LightningModule):
                 {"params": trainable, "lr": self.hyper_parameters.learning_rate},
                 {"params": loss_params, "lr": self.hyper_parameters.learning_rate / 10},
             ]
-            if loss_params
-            else [{"params": trainable, "lr": self.hyper_parameters.learning_rate}]
         )
 
         if self.hyper_parameters.lr_scheduler:
@@ -79,7 +77,7 @@ def _get_wandb_logger(hyper_parameters: config.HyperParameters):
     name = f"{hyper_parameters.wandb_config.project}-{datetime.datetime.now()}"
     if hyper_parameters.debug:
         name = "debug-" + name
-    return L.loggers.WandbLogger(
+    return L.WandbLogger(
         entity=hyper_parameters.wandb_config.entity,
         save_dir=hyper_parameters.wandb_config.wandb_log_path,
         project=hyper_parameters.wandb_config.project,
