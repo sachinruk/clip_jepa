@@ -5,7 +5,7 @@ import pydantic
 
 class JepaConfig(pydantic.BaseModel):
     model_name: str = "Qwen/Qwen2.5-VL-3B-Instruct"
-    max_pixels: int = 512 * 512
+    max_pixels: int = 384 * 384
     embed_start_token: str = "<EMBED>"
     embed_end_token: str = "</EMBED>"
 
@@ -20,8 +20,10 @@ class WandbConfig(pydantic.BaseModel):
 
 
 class LoraConfig(pydantic.BaseModel):
-    lora_rank: int = 32
-    lora_alpha: int = 8
+    use_qlora: bool = True
+    use_dora: bool = False
+    lora_rank: int = 8
+    lora_alpha: int = 16
     lora_dropout: float = 0.05
     target_modules: list[str] = [
         "qkv",

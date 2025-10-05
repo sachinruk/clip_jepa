@@ -1,4 +1,5 @@
 accelerate
+bitsandbytes
 click
 datasets
 einops

@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from transformers import (
     Qwen2_5_VLForConditionalGeneration,
     AutoProcessor,
+    BitsAndBytesConfig,
 )
 
 from src import config
@@ -29,6 +30,7 @@ class ModelComponents:
 def init_model(
     jepa_config: config.JepaConfig,
     device: torch.device,
+    use_qlora: bool = False,
 ) -> ModelComponents:
     """
     Initialize the CLIP-JEPA model and processor.
@@ -36,13 +38,26 @@ def init_model(
     Args:
         jepa_config: Configuration for the JEPA model
         device: Device to load the model on
+        use_qlora: Whether to use QLoRA (4-bit quantization)
 
     Returns:
         ModelComponents containing model, processor, and token IDs
     """
+    # Setup quantization config for QLoRA
+    quantization_config = None
+    if use_qlora:
+        logger.info("Using QLoRA (4-bit quantization)")
+        quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+        )
+
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         pretrained_model_name_or_path=jepa_config.model_name,
-        dtype=torch.bfloat16 if device.type == "cuda" else torch.float32,
+        quantization_config=quantization_config,
+        dtype=torch.bfloat16 if device.type in {"cuda", "mps"} else torch.float32,
         attn_implementation="flash_attention_2" if device.type == "cuda" else "sdpa",
         device_map="auto",
     )
@@ -157,19 +172,35 @@ def get_lora_model(
     model: Qwen2_5_VLForConditionalGeneration,
     hyper_parameters: config.HyperParameters,
 ) -> Qwen2_5_VLForConditionalGeneration:
+    """
+    Apply LoRA or QLoRA to the model.
+
+    Args:
+        model: The base model to apply LoRA to
+        hyper_parameters: Configuration for LoRA
+        use_qlora: If True, configures for QLoRA (no DoRA, prepares for gradient checkpointing)
+
+    Returns:
+        Model with LoRA adapters applied
+    """
+    # Prepare model for k-bit training if using QLoRA
+    if hyper_parameters.lora_config.use_qlora:
+        model = peft.prepare_model_for_kbit_training(model)
+        logger.info("Model prepared for QLoRA (4-bit training)")
+
     lora_config = peft.LoraConfig(
         r=hyper_parameters.lora_config.lora_rank,
         lora_alpha=hyper_parameters.lora_config.lora_alpha,
         lora_dropout=hyper_parameters.lora_config.lora_dropout,
         target_modules=hyper_parameters.lora_config.target_modules,
-        use_dora=True,
+        use_dora=hyper_parameters.lora_config.use_dora,  # DoRA doesn't work with quantized models
         init_lora_weights="gaussian",
-        modules_to_save=hyper_parameters.lora_config.modules_to_save,
+        # modules_to_save=hyper_parameters.lora_config.modules_to_save,
     )
     lora_model = peft.get_peft_model(model, lora_config)
     trainable_params, all_params = lora_model.get_nb_trainable_parameters()
     logger.info(
-        f"Trainable portion: {trainable_params / all_params:.4f}, trainable params: {trainable_params}"
+        f"{'QLoRA' if hyper_parameters.lora_config.use_qlora else 'LoRA'} applied - Trainable portion: {trainable_params / all_params:.4f}, trainable params: {trainable_params}"
     )
     return lora_model
 

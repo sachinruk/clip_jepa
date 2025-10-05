@@ -42,9 +42,10 @@ class CyCLIPLoss(nn.Module):
         text_embedding: torch.Tensor,
     ) -> torch.Tensor:
         temperature = self.logit_temperature.sigmoid()
-        similarity_matrix = (image_embedding @ text_embedding.T) / temperature
-        caption_loss = contrastive_loss(similarity_matrix, dim=0)
-        image_loss = contrastive_loss(similarity_matrix, dim=1)
+        similarity_matrix = image_embedding @ text_embedding.T
+        normalized_similarity_matrix = similarity_matrix / temperature
+        caption_loss = contrastive_loss(normalized_similarity_matrix, dim=0)
+        image_loss = contrastive_loss(normalized_similarity_matrix, dim=1)
 
         symmetry_loss = F.mse_loss(similarity_matrix, similarity_matrix.T)
         modality_difference_loss = F.mse_loss(
@@ -65,7 +66,7 @@ class SigLIPLoss(nn.Module):
 
     def forward(self, image_embedding: torch.Tensor, text_embedding: torch.Tensor) -> torch.Tensor:
         temperature = self.logit_temperature.sigmoid()
-        similarity_matrix = (image_embedding @ text_embedding.T) / temperature
+        similarity_matrix = image_embedding @ text_embedding.T
         return contrastive_sigmoid_loss(similarity_matrix / temperature)
 
 
@@ -82,8 +83,8 @@ class CySigLIPLoss(nn.Module):
         text_embedding: torch.Tensor,
     ) -> torch.Tensor:
         temperature = self.logit_temperature.sigmoid()
-        similarity_matrix = (image_embedding @ text_embedding.T) / temperature
-        loss = contrastive_sigmoid_loss(similarity_matrix)
+        similarity_matrix = image_embedding @ text_embedding.T
+        loss = contrastive_sigmoid_loss(similarity_matrix / temperature)
 
         symmetry_loss = F.mse_loss(similarity_matrix, similarity_matrix.T)
         modality_difference_loss = F.mse_loss(

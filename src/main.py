@@ -46,21 +46,25 @@ def main(hyper_parameters_json: str):
     train_loader, valid_loader = data.get_dataset(hyper_parameters)
     logger.info(f"Train batches: {len(train_loader)}, Valid batches: {len(valid_loader)}")
 
-    logger.info("Loading CLIP-JEPA model...")
+    use_qlora = hyper_parameters.lora_config.use_qlora
     model_components = model.init_model(
         jepa_config=hyper_parameters.llm_model_config,
         device=device,
+        use_qlora=use_qlora,
     )
 
-    logger.info("Applying LoRA adapters...")
-    model_components.model = model.get_lora_model(model_components.model, hyper_parameters)
-
-    logger.info("Applying gradient mask to embedding weights...")
-    embed_shape = model_components.model.get_input_embeddings().weight.shape
-    grad_hook = model.GradMaskHook(
-        model_components.embed_start_token_id, model_components.embed_end_token_id, embed_shape
+    logger.info(f"Applying {'QLoRA' if use_qlora else 'LoRA'} adapters...")
+    model_components.model = model.get_lora_model(
+        model_components.model,
+        hyper_parameters,
     )
-    model.embedding_zero_grad(model_components.model, grad_hook)
+
+    # logger.info("Applying gradient mask to embedding weights...")
+    # embed_shape = model_components.model.get_input_embeddings().weight.shape
+    # grad_hook = model.GradMaskHook(
+    #     model_components.embed_start_token_id, model_components.embed_end_token_id, embed_shape
+    # )
+    # model.embedding_zero_grad(model_components.model, grad_hook)
     initial_embed_params = (
         model_components.model.get_input_embeddings().weight[:, :10].clone().detach()
     )
@@ -77,7 +81,7 @@ def main(hyper_parameters_json: str):
     )
 
     logger.info("Initializing Lightning trainer...")
-    lightning_trainer = trainer.get_trainer(hyper_parameters)
+    lightning_trainer = trainer.get_trainer(hyper_parameters, device)
 
     logger.info("Starting training...")
     lightning_trainer.fit(
