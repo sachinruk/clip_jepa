@@ -9,7 +9,9 @@ def contrastive_loss(logits, dim):
 
 
 def contrastive_sigmoid_loss(logits):
-    return F.binary_cross_entropy_with_logits(logits, torch.eye(len(logits)), reduction="mean")
+    return F.binary_cross_entropy_with_logits(
+        logits, torch.eye(len(logits)).to(logits.device), reduction="mean"
+    )
 
 
 class CLIPLoss(nn.Module):

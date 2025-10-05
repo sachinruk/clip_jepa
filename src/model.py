@@ -1,4 +1,5 @@
 from typing import Any
+from dataclasses import dataclass
 
 from loguru import logger
 import peft
@@ -14,89 +15,142 @@ from transformers import (
 from src import config
 
 
-class CLIPJepaModel:
-    def __init__(
-        self,
-        config: config.JepaConfig,
-        device: torch.device,
-    ):
-        self.config = config
-        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            pretrained_model_name_or_path=config.model_name,
-            dtype=torch.bfloat16 if device.type == "cuda" else torch.float32,
-            attn_implementation="flash_attention_2" if device.type == "cuda" else "sdpa",
-            device_map="auto",
-        )
-        self.processor = AutoProcessor.from_pretrained(
-            config.model_name,
-            max_pixels=config.max_pixels,
-        )
+@dataclass
+class ModelComponents:
+    """Container for model components."""
 
-        self.processor.tokenizer.add_special_tokens(
-            {
-                "additional_special_tokens": [
-                    config.embed_start_token,
-                    config.embed_end_token,
-                ]
-            }
-        )
-        self.model.resize_token_embeddings(len(self.processor.tokenizer))
+    model: Qwen2_5_VLForConditionalGeneration
+    processor: AutoProcessor
+    jepa_config: config.JepaConfig
+    embed_start_token_id: int
+    embed_end_token_id: int
 
-        self.embed_start_token_id = self.processor.tokenizer.convert_tokens_to_ids(
-            config.embed_start_token
-        )
-        self.embed_end_token_id = self.processor.tokenizer.convert_tokens_to_ids(
-            config.embed_end_token
-        )
 
-    def embed_text(self, texts: list[str]):
-        messages = [
-            [{"role": "user", "content": [{"type": "text", "text": text}]}] for text in texts
-        ]
-        embedding = self._encode_text_with_prediction(messages)
-        return embedding
+def init_model(
+    jepa_config: config.JepaConfig,
+    device: torch.device,
+) -> ModelComponents:
+    """
+    Initialize the CLIP-JEPA model and processor.
 
-    def embed_image(self, images: list[Image.Image]):
-        messages = [
-            [{"role": "user", "content": [{"type": "image", "image": image}]}] for image in images
-        ]
-        embedding = self._encode_text_with_prediction(messages)
-        return embedding
+    Args:
+        jepa_config: Configuration for the JEPA model
+        device: Device to load the model on
 
-    def _encode_text_with_prediction(self, messages: list[dict[str, Any]]) -> torch.Tensor:
-        """
-        Encode text and extract embedding at the last valid token position.
-        Uses the LLM's self-attention to produce embeddings for the text span
-        located between <EMBED> and </EMBED> tokens.
-        The embedding is extracted from the hidden state at the </EMBED> token position.
+    Returns:
+        ModelComponents containing model, processor, and token IDs
+    """
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        pretrained_model_name_or_path=jepa_config.model_name,
+        dtype=torch.bfloat16 if device.type == "cuda" else torch.float32,
+        attn_implementation="flash_attention_2" if device.type == "cuda" else "sdpa",
+        device_map="auto",
+    )
+    processor = AutoProcessor.from_pretrained(
+        jepa_config.model_name,
+        max_pixels=jepa_config.max_pixels,
+    )
 
-        Args:
-            messages: List of dictionaries representing the chat history/messages.
+    processor.tokenizer.add_special_tokens(
+        {
+            "additional_special_tokens": [
+                jepa_config.embed_start_token,
+                jepa_config.embed_end_token,
+            ]
+        }
+    )
+    model.resize_token_embeddings(len(processor.tokenizer))
 
-        Returns:
-            Normalized Embedding at the last valid token position [B, H]
-        """
+    embed_start_token_id = processor.tokenizer.convert_tokens_to_ids(jepa_config.embed_start_token)
+    embed_end_token_id = processor.tokenizer.convert_tokens_to_ids(jepa_config.embed_end_token)
 
-        processed_text = self.processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        image_inputs, video_inputs = qwen_vl_utils.process_vision_info(messages)
-        inputs = self.processor(
-            text=[
-                self.config.embed_start_token + text + self.config.embed_end_token
-                for text in processed_text
-            ],
-            images=image_inputs,
-            videos=video_inputs,
-            padding=True,
-            return_tensors="pt",
-        ).to(self.model.device)
+    return ModelComponents(
+        model=model,
+        processor=processor,
+        jepa_config=jepa_config,
+        embed_start_token_id=embed_start_token_id,
+        embed_end_token_id=embed_end_token_id,
+    )
 
-        out = self.model(**inputs, output_hidden_states=True)
-        h_last = out.hidden_states[-1]  # [B, T+2, H]
-        last_idx = inputs["input_ids"] == self.embed_end_token_id
-        embedding = h_last[last_idx]  # [B, H]
-        return F.normalize(embedding, dim=-1)
+
+def embed_text(
+    texts: list[str],
+    model_components: ModelComponents,
+) -> torch.Tensor:
+    """
+    Embed text using the CLIP-JEPA model.
+
+    Args:
+        texts: List of text strings to embed
+        model_components: ModelComponents containing model, processor, and config
+
+    Returns:
+        Normalized embeddings [B, H]
+    """
+    messages = [[{"role": "user", "content": [{"type": "text", "text": text}]}] for text in texts]
+    return _encode_with_prediction(messages, model_components)
+
+
+def embed_image(
+    images: list[Image.Image],
+    model_components: ModelComponents,
+) -> torch.Tensor:
+    """
+    Embed images using the CLIP-JEPA model.
+
+    Args:
+        images: List of PIL images to embed
+        model_components: ModelComponents containing model, processor, and config
+
+    Returns:
+        Normalized embeddings [B, H]
+    """
+    messages = [
+        [{"role": "user", "content": [{"type": "image", "image": image}]}] for image in images
+    ]
+    return _encode_with_prediction(messages, model_components)
+
+
+def _encode_with_prediction(
+    messages: list[dict[str, Any]],
+    model_components: ModelComponents,
+) -> torch.Tensor:
+    """
+    Encode text and extract embedding at the last valid token position.
+    Uses the LLM's self-attention to produce embeddings for the text span
+    located between <EMBED> and </EMBED> tokens.
+    The embedding is extracted from the hidden state at the </EMBED> token position.
+
+    Args:
+        messages: List of dictionaries representing the chat history/messages.
+        model_components: ModelComponents containing model, processor, and config
+
+    Returns:
+        Normalized Embedding at the last valid token position [B, H]
+    """
+
+    processed_text = model_components.processor.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+    image_inputs, video_inputs = qwen_vl_utils.process_vision_info(messages)
+    inputs = model_components.processor(
+        text=[
+            model_components.jepa_config.embed_start_token
+            + text
+            + model_components.jepa_config.embed_end_token
+            for text in processed_text
+        ],
+        images=image_inputs,
+        videos=video_inputs,
+        padding=True,
+        return_tensors="pt",
+    ).to(model_components.model.device)
+
+    out = model_components.model(**inputs, output_hidden_states=True)
+    h_last = out.hidden_states[-1]  # [B, T+2, H]
+    last_idx = inputs["input_ids"] == model_components.embed_end_token_id
+    embedding = h_last[last_idx]  # [B, H]
+    return F.normalize(embedding, dim=-1)
 
 
 def get_lora_model(

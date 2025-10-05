@@ -24,7 +24,7 @@ def main(hyper_parameters_json: str):
     # Parse hyperparameters
     logger.info("Parsing hyperparameters...")
     hyper_parameters = config.HyperParameters.model_validate_json(hyper_parameters_json)
-    logger.info(f"Hyperparameters: {hyper_parameters.model_dump()}")
+    logger.info(f"Hyperparameters: {hyper_parameters.model_dump_json(indent=2)}")
 
     # Set environment variables
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -47,22 +47,24 @@ def main(hyper_parameters_json: str):
     logger.info(f"Train batches: {len(train_loader)}, Valid batches: {len(valid_loader)}")
 
     logger.info("Loading CLIP-JEPA model...")
-    clip_jepa_model = model.CLIPJepaModel(
-        config=hyper_parameters.llm_model_config,
+    model_components = model.init_model(
+        jepa_config=hyper_parameters.llm_model_config,
         device=device,
     )
 
     logger.info("Applying LoRA adapters...")
-    lora_model = model.get_lora_model(clip_jepa_model.model, hyper_parameters)
+    model_components.model = model.get_lora_model(model_components.model, hyper_parameters)
 
     logger.info("Applying gradient mask to embedding weights...")
-    embed_shape = lora_model.get_input_embeddings().weight.shape
+    embed_shape = model_components.model.get_input_embeddings().weight.shape
     grad_hook = model.GradMaskHook(
-        clip_jepa_model.embed_start_token_id, clip_jepa_model.embed_end_token_id, embed_shape
+        model_components.embed_start_token_id, model_components.embed_end_token_id, embed_shape
     )
-    model.embedding_zero_grad(lora_model, grad_hook)
-    initial_embed_params = lora_model.get_input_embeddings().weight.clone().detach()
-    initial_lm_head_params = lora_model.lm_head.weight.clone().detach()
+    model.embedding_zero_grad(model_components.model, grad_hook)
+    initial_embed_params = (
+        model_components.model.get_input_embeddings().weight[:, :10].clone().detach()
+    )
+    initial_lm_head_params = model_components.model.lm_head.weight[:, :10].clone().detach()
 
     logger.info(f"Using loss type: {hyper_parameters.loss_type}")
     loss_fn = losses.get_loss(hyper_parameters.loss_type)
@@ -70,7 +72,7 @@ def main(hyper_parameters_json: str):
     logger.info("Creating Lightning trainer module...")
     lightning_module = trainer.CLIPJepaTrainer(
         hyper_parameters=hyper_parameters,
-        model=lora_model,
+        model_components=model_components,
         loss_fn=loss_fn,
     )
 
@@ -87,8 +89,10 @@ def main(hyper_parameters_json: str):
     logger.success("Training completed!")
     logger.info(f"Model saved to: {hyper_parameters.output_dir}")
 
-    final_embed_params = lora_model.get_input_embeddings().weight[:100, :100].clone().detach()
-    final_lm_head_params = lora_model.lm_head.weight[:100, :100].clone().detach()
+    final_embed_params = (
+        model_components.model.get_input_embeddings().weight[:, :10].clone().detach()
+    )
+    final_lm_head_params = model_components.model.lm_head.weight[:, :10].clone().detach()
     logger.info(
         f"Initial embed params is equal to final embed params: {torch.allclose(initial_embed_params, final_embed_params)}"
     )
@@ -98,6 +102,7 @@ def main(hyper_parameters_json: str):
     logger.info(
         f"Initial embed params is equal to final lm head params: {torch.allclose(initial_embed_params, final_lm_head_params)}"
     )
+    logger.info("done")
 
 
 if __name__ == "__main__":

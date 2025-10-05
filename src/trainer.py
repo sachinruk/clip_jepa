@@ -12,36 +12,52 @@ class CLIPJepaTrainer(L.LightningModule):
     def __init__(
         self,
         hyper_parameters: config.HyperParameters,
-        model: model.CLIPJepaModel,
+        model_components: model.ModelComponents,
         loss_fn: nn.Module,
     ):
         super().__init__()
         self.hyper_parameters = hyper_parameters
-        self.model = model
+        self.model_components = model_components
         self.loss_fn = loss_fn
 
-    def common_step(self, batch: tuple[list[str], list[Image.Image]], prefix: str):
-        text, images = batch
-        text_embeddings = self.model.embed_text(text)
-        image_embeddings = self.model.embed_image(images)
+    def common_step(self, batch: dict[str, list[str] | list[Image.Image]], prefix: str):
+        text = batch["texts"]
+        images = batch["images"]
+        text_embeddings = model.embed_text(text, self.model_components)
+        image_embeddings = model.embed_image(images, self.model_components)
         loss = self.loss_fn(text_embeddings, image_embeddings)
         img_acc, cap_acc = metrics.metrics(image_embeddings, text_embeddings)
 
-        self.log(f"{prefix}_loss", loss, on_step=False, on_epoch=True)
-        self.log(f"{prefix}_img_acc", img_acc, on_step=False, on_epoch=True, prog_bar=True)
-        self.log(f"{prefix}_cap_acc", cap_acc, on_step=False, on_epoch=True, prog_bar=True)
+        batch_size = len(text)
+        common_log_kwargs = {
+            "on_step": False,
+            "on_epoch": True,
+            "batch_size": batch_size,
+            "prog_bar": True,
+        }
+        self.log(f"{prefix}_loss", loss, **common_log_kwargs)
+        self.log(
+            f"{prefix}_img_acc",
+            img_acc,
+            **common_log_kwargs,
+        )
+        self.log(
+            f"{prefix}_cap_acc",
+            cap_acc,
+            **common_log_kwargs,
+        )
 
         return loss
 
-    def training_step(self, batch: tuple[list[str], list[Image.Image]], batch_idx: int):
+    def training_step(self, batch: dict[str, list[str] | list[Image.Image]], batch_idx: int):
         return self.common_step(batch, "train")
 
-    def validation_step(self, batch: tuple[list[str], list[Image.Image]], batch_idx: int):
+    def validation_step(self, batch: dict[str, list[str] | list[Image.Image]], batch_idx: int):
         _ = self.common_step(batch, "valid")
 
     def configure_optimizers(self):
         # Only LoRA (and any separate loss head) params
-        trainable = [p for p in self.model.parameters() if p.requires_grad]
+        trainable = [p for p in self.model_components.model.parameters() if p.requires_grad]
         # If you also want to train a custom loss head, include it here:
         loss_params = (
             list(self.loss_fn.parameters())
@@ -69,18 +85,21 @@ class CLIPJepaTrainer(L.LightningModule):
     def on_save_checkpoint(self, checkpoint):
         # Save adapters into a folder, e.g., self.trainer.logger.log_dir or a hyperparam path
         # Works for both PeftModel and nonwrapped (no-op) if you guard it:
-        if hasattr(self.model.model, "save_pretrained"):
-            self.model.model.save_pretrained(self.hyper_parameters.output_dir)
+        if hasattr(self.model_components.model, "save_pretrained"):
+            self.model_components.model.save_pretrained(self.hyper_parameters.output_dir)
 
 
 def _get_wandb_logger(hyper_parameters: config.HyperParameters):
     name = f"{hyper_parameters.wandb_config.project}-{datetime.datetime.now()}"
+    project = hyper_parameters.wandb_config.project
     if hyper_parameters.debug:
         name = "debug-" + name
-    return L.WandbLogger(
+        project = "debug-" + project
+
+    return L.pytorch.loggers.WandbLogger(
         entity=hyper_parameters.wandb_config.entity,
         save_dir=hyper_parameters.wandb_config.wandb_log_path,
-        project=hyper_parameters.wandb_config.project,
+        project=project,
         name=name,
         config=hyper_parameters.model_dump(),
     )
