@@ -1,0 +1,15 @@
+accelerate
+click
+datasets
+einops
+ipywidgets
+lightning
+loguru
+peft
+qwen_vl_utils
+ruff
+torch
+torchvision
+tqdm
+transformers
+wandb
