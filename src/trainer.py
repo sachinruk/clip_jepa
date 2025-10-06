@@ -89,26 +89,10 @@ class CLIPJepaTrainer(L.LightningModule):
             self.model_components.model.save_pretrained(self.hyper_parameters.output_dir)
 
 
-def _get_wandb_logger(hyper_parameters: config.HyperParameters):
-    name = f"{hyper_parameters.wandb_config.project}-{datetime.datetime.now()}"
-    project = hyper_parameters.wandb_config.project
-    if hyper_parameters.debug:
-        name = "debug-" + name
-        project = "debug-" + project
-
-    return L.pytorch.loggers.WandbLogger(
-        entity=hyper_parameters.wandb_config.entity,
-        save_dir=hyper_parameters.wandb_config.wandb_log_path,
-        project=project,
-        name=name,
-        config=hyper_parameters.model_dump(),
-    )
-
-
 def get_trainer(hyper_parameters: config.HyperParameters, device: torch.device):
     return L.Trainer(
         max_epochs=hyper_parameters.epochs if not hyper_parameters.debug else 1,
-        logger=_get_wandb_logger(hyper_parameters),
+        logger=L.pytorch.loggers.WandbLogger(),
         log_every_n_steps=hyper_parameters.log_every_n_steps,
         gradient_clip_val=1.0,
         limit_train_batches=5 if hyper_parameters.debug else 1.0,

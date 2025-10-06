@@ -1,10 +1,47 @@
+import datetime
 import os
 
 import click
 import torch
 from loguru import logger
+import lightning as L
+import wandb
 
 from src import config, data, losses, model, trainer
+
+
+def _wandb_init(hyper_parameters: config.HyperParameters):
+    name = f"{hyper_parameters.wandb_config.project}-{datetime.datetime.now()}"
+    project = hyper_parameters.wandb_config.project
+    if hyper_parameters.debug:
+        name = "debug-" + name
+        project = "debug-" + project
+
+    wandb.init(
+        entity=hyper_parameters.wandb_config.entity,
+        project=project,
+        name=name,
+        config=hyper_parameters.model_dump(),
+        dir=hyper_parameters.wandb_config.wandb_log_path,
+    )
+
+
+def _setup_environment(hyper_parameters: config.HyperParameters):
+    L.seed_everything(hyper_parameters.seed)
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+    # Empty torch cache before starting
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        logger.info("Cleared CUDA cache")
+    elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
+        torch.mps.empty_cache()
+        logger.info("Cleared MPS cache")
+
+    # Create output directories
+    hyper_parameters.output_dir.mkdir(parents=True, exist_ok=True)
+    hyper_parameters.lora_config.lora_weight_path.mkdir(parents=True, exist_ok=True)
+    hyper_parameters.wandb_config.wandb_log_path.mkdir(parents=True, exist_ok=True)
 
 
 @click.command()
@@ -25,22 +62,8 @@ def main(hyper_parameters_json: str):
     logger.info("Parsing hyperparameters...")
     hyper_parameters = config.HyperParameters.model_validate_json(hyper_parameters_json)
     logger.info(f"Hyperparameters: {hyper_parameters.model_dump_json(indent=2)}")
-
-    # Set environment variables
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-    # Empty torch cache before starting
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        logger.info("Cleared CUDA cache")
-    elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
-        torch.mps.empty_cache()
-        logger.info("Cleared MPS cache")
-
-    # Create output directories
-    hyper_parameters.output_dir.mkdir(parents=True, exist_ok=True)
-    hyper_parameters.lora_config.lora_weight_path.mkdir(parents=True, exist_ok=True)
-    hyper_parameters.wandb_config.wandb_log_path.mkdir(parents=True, exist_ok=True)
+    _wandb_init(hyper_parameters)
+    _setup_environment(hyper_parameters)
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -61,21 +84,33 @@ def main(hyper_parameters_json: str):
         use_qlora=use_qlora,
     )
 
+    model_components.model.delta_on_embedding = model.DeltaOnEmbedding(
+        start_id=model_components.embed_start_token_id,
+        end_id=model_components.embed_end_token_id,
+        hidden_size=model_components.model.get_input_embeddings().weight.shape[1],
+        init_std=model_components.model.get_input_embeddings().weight.std().item(),
+        device=device,
+    )
+    model_components.model.get_input_embeddings().register_forward_hook(
+        model_components.model.delta_on_embedding.hook
+    )
+    hyper_parameters.lora_config.modules_to_save.append("delta_on_embedding")
+
     logger.info(f"Applying {'QLoRA' if use_qlora else 'LoRA'} adapters...")
     model_components.model = model.get_lora_model(
         model_components.model,
         hyper_parameters,
     )
 
-    logger.info("Applying gradient mask to embedding weights...")
-    embed_shape = model_components.model.get_input_embeddings().weight.shape
-    grad_hook = model.GradMaskHook(
-        embed_start_token_id=model_components.embed_start_token_id,
-        embed_end_token_id=model_components.embed_end_token_id,
-        embed_shape=embed_shape,
-        device=device,
-    )
-    model.embedding_zero_grad(model_components.model, grad_hook)
+    # logger.info("Applying gradient mask to embedding weights...")
+    # embed_shape = model_components.model.get_input_embeddings().weight.shape
+    # grad_hook = model.GradMaskHook(
+    #     embed_start_token_id=model_components.embed_start_token_id,
+    #     embed_end_token_id=model_components.embed_end_token_id,
+    #     embed_shape=embed_shape,
+    #     device=device,
+    # )
+    # model.embedding_zero_grad(model_components.model, grad_hook)
 
     logger.info(f"Using loss type: {hyper_parameters.loss_type}")
     loss_fn = losses.get_loss(hyper_parameters.loss_type)

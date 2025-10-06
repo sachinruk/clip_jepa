@@ -8,6 +8,7 @@ class JepaConfig(pydantic.BaseModel):
     max_pixels: int = 384 * 384
     embed_start_token: str = "<EMBED>"
     embed_end_token: str = "</EMBED>"
+    max_length: int = 1024
 
     class Config:
         extra = "forbid"
@@ -39,7 +40,7 @@ class LoraConfig(pydantic.BaseModel):
         "down_proj",
     ]
     lora_weight_path: pathlib.Path = pathlib.Path("/tmp/lora")
-    modules_to_save: list[str] = ["embed_tokens"]
+    modules_to_save: None | list[str] = ["embed_tokens"]
 
 
 class DataConfig(pydantic.BaseModel):
@@ -51,6 +52,7 @@ class DataConfig(pydantic.BaseModel):
 
 class HyperParameters(pydantic.BaseModel):
     epochs: int = 5
+    seed: int = 42
     batch_size: int = 8
     learning_rate: float = 5e-4
     lr_scheduler: bool = True

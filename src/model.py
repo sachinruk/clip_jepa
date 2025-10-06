@@ -6,6 +6,7 @@ import peft
 from PIL import Image
 import qwen_vl_utils
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from transformers import (
     Qwen2_5_VLForConditionalGeneration,
@@ -64,6 +65,7 @@ def init_model(
     processor = AutoProcessor.from_pretrained(
         jepa_config.model_name,
         max_pixels=jepa_config.max_pixels,
+        max_length=jepa_config.max_length,
     )
 
     processor.tokenizer.add_special_tokens(
@@ -165,6 +167,9 @@ def _encode_with_prediction(
     h_last = out.hidden_states[-1]  # [B, T+2, H]
     last_idx = inputs["input_ids"] == model_components.embed_end_token_id
     embedding = h_last[last_idx]  # [B, H]
+    # logger.info(f"Last hidden of {'image' if image_inputs else 'text'} state shape: {h_last.shape}")
+    # if len(embedding) != len(messages):
+    #     logger.warning(f"Embedding length mismatch: {len(embedding)} != {len(messages)}")
     return F.normalize(embedding, dim=-1)
 
 
@@ -231,3 +236,48 @@ def embedding_zero_grad(lora_model: Qwen2_5_VLForConditionalGeneration, grad_hoo
     embed = lora_model.get_input_embeddings()
     embed.weight.requires_grad_(True)
     embed.weight.register_hook(grad_hook)
+
+
+class DeltaOnEmbedding(nn.Module):
+    """
+    Adds a (2, H) delta to the *output* of the input embedding only where
+    input_ids == start_id or end_id. Keeps the base embedding frozen & intact.
+    """
+
+    def __init__(
+        self,
+        start_id: int,
+        end_id: int,
+        hidden_size: int,
+        init_std: float = 0.02,
+        dtype=None,
+        device=None,
+    ):
+        super().__init__()
+        self.start_id = int(start_id)
+        self.end_id = int(end_id)
+        self.delta = nn.Parameter(torch.zeros(2, hidden_size, dtype=dtype, device=device))
+        nn.init.normal_(self.delta, mean=0.0, std=init_std)
+        logger.info(
+            f"Adding {self.delta.numel()} trainable parameters from DeltaOnEmbedding module."
+        )
+
+    def hook(self, embed_module: nn.Embedding, inputs, output):
+        """
+        Registered as a forward hook on the input embedding module.
+        inputs[0]: input_ids  (B, T) or (T,)
+        output:    embeddings (B, T, H) or (T, H)
+        """
+        input_ids = inputs[0]
+        emb = output
+
+        # Broadcast (..,1) so we can add a (H,) row delta
+        mask_start = (input_ids == self.start_id).unsqueeze(-1)
+        mask_end = (input_ids == self.end_id).unsqueeze(-1)
+
+        # Add deltas only to those positions
+        # cast masks to emb dtype for safe mixed-precision
+        emb = (
+            emb + mask_start.to(emb.dtype) * self.delta[0] + mask_end.to(emb.dtype) * self.delta[1]
+        )
+        return emb  # returning a new output is supported by forward hooks
