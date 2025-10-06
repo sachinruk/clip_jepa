@@ -115,5 +115,5 @@ def get_trainer(hyper_parameters: config.HyperParameters, device: torch.device):
         limit_val_batches=5 if hyper_parameters.debug else 1.0,
         accelerator="auto",
         num_sanity_val_steps=0 if hyper_parameters.debug else 2,
-        precision="bf16-mixed" if device.type in {"cuda", "mps"} else "32",
+        precision="bf16" if device.type in {"cuda", "mps"} else "32",
     )

@@ -207,16 +207,24 @@ def get_lora_model(
 
 class GradMaskHook:
     def __init__(
-        self, embed_start_token_id: int, embed_end_token_id: int, embed_shape: tuple[int, int]
+        self,
+        embed_start_token_id: int,
+        embed_end_token_id: int,
+        embed_shape: tuple[int, int],
+        device: torch.device,
     ):
         self.embed_start_token_id = embed_start_token_id
         self.embed_end_token_id = embed_end_token_id
-        self.mask = torch.zeros(embed_shape, dtype=torch.bool)
+        self.mask = torch.zeros(embed_shape, dtype=torch.bool, device=device)
         self.mask[embed_start_token_id] = True
         self.mask[embed_end_token_id] = True
+        self.device = device
 
     def __call__(self, grad: torch.Tensor) -> torch.Tensor:
-        return grad * self.mask.float()
+        if self.device.type in {"cuda", "mps"}:
+            return grad * self.mask.bfloat16()
+        else:
+            return grad * self.mask.float()
 
 
 def embedding_zero_grad(lora_model: Qwen2_5_VLForConditionalGeneration, grad_hook: GradMaskHook):

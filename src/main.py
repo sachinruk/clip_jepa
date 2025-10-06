@@ -70,7 +70,10 @@ def main(hyper_parameters_json: str):
     logger.info("Applying gradient mask to embedding weights...")
     embed_shape = model_components.model.get_input_embeddings().weight.shape
     grad_hook = model.GradMaskHook(
-        model_components.embed_start_token_id, model_components.embed_end_token_id, embed_shape
+        embed_start_token_id=model_components.embed_start_token_id,
+        embed_end_token_id=model_components.embed_end_token_id,
+        embed_shape=embed_shape,
+        device=device,
     )
     model.embedding_zero_grad(model_components.model, grad_hook)
     initial_embed_params = (
