@@ -259,7 +259,9 @@ class DeltaOnEmbedding(nn.Module):
             f"Adding {self.delta.numel()} trainable parameters from DeltaOnEmbedding module."
         )
 
-    def hook(self, embed_module: nn.Embedding, inputs, output):
+    def hook(
+        self, embed_module: nn.Embedding, inputs: tuple[torch.Tensor, ...], output: torch.Tensor
+    ) -> torch.Tensor:
         """
         Registered as a forward hook on the input embedding module.
         inputs[0]: input_ids  (B, T) or (T,)
