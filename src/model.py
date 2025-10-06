@@ -195,7 +195,7 @@ def get_lora_model(
         target_modules=hyper_parameters.lora_config.target_modules,
         use_dora=hyper_parameters.lora_config.use_dora,  # DoRA doesn't work with quantized models
         init_lora_weights="gaussian",
-        # modules_to_save=hyper_parameters.lora_config.modules_to_save,
+        modules_to_save=hyper_parameters.lora_config.modules_to_save,
     )
     lora_model = peft.get_peft_model(model, lora_config)
     trainable_params, all_params = lora_model.get_nb_trainable_parameters()

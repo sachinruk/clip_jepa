@@ -117,6 +117,9 @@ def main(hyper_parameters_json: str):
     logger.info(
         f"Initial embed params is equal to final lm head params: {torch.allclose(initial_embed_params, final_lm_head_params)}"
     )
+    logger.info(
+        f"Final embed params is equal to final lm head params: {torch.allclose(final_embed_params, final_lm_head_params)}"
+    )
     logger.info("done")
 
 

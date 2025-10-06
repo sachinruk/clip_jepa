@@ -39,7 +39,7 @@ class LoraConfig(pydantic.BaseModel):
         "down_proj",
     ]
     lora_weight_path: pathlib.Path = pathlib.Path("/tmp/lora")
-    modules_to_save: list[str] = ["embed_tokens", "lm_head"]
+    modules_to_save: list[str] = ["embed_tokens"]
 
 
 class DataConfig(pydantic.BaseModel):
