@@ -226,10 +226,7 @@ class GradMaskHook:
         self.device = device
 
     def __call__(self, grad: torch.Tensor) -> torch.Tensor:
-        if self.device.type in {"cuda", "mps"}:
-            return grad * self.mask.bfloat16()
-        else:
-            return grad * self.mask.float()
+        return grad * self.mask.to(grad.dtype)
 
 
 def embedding_zero_grad(lora_model: Qwen2_5_VLForConditionalGeneration, grad_hook: GradMaskHook):
