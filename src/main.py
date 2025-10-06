@@ -76,10 +76,6 @@ def main(hyper_parameters_json: str):
         device=device,
     )
     model.embedding_zero_grad(model_components.model, grad_hook)
-    initial_embed_params = (
-        model_components.model.get_input_embeddings().weight[:, :10].clone().detach()
-    )
-    initial_lm_head_params = model_components.model.lm_head.weight[:, :10].clone().detach()
 
     logger.info(f"Using loss type: {hyper_parameters.loss_type}")
     loss_fn = losses.get_loss(hyper_parameters.loss_type)
@@ -104,22 +100,6 @@ def main(hyper_parameters_json: str):
     logger.success("Training completed!")
     logger.info(f"Model saved to: {hyper_parameters.output_dir}")
 
-    final_embed_params = (
-        model_components.model.get_input_embeddings().weight[:, :10].clone().detach()
-    )
-    final_lm_head_params = model_components.model.lm_head.weight[:, :10].clone().detach()
-    logger.info(
-        f"Initial embed params is equal to final embed params: {torch.allclose(initial_embed_params, final_embed_params)}"
-    )
-    logger.info(
-        f"Initial lm head params is equal to final lm head params: {torch.allclose(initial_lm_head_params, final_lm_head_params)}"
-    )
-    logger.info(
-        f"Initial embed params is equal to final lm head params: {torch.allclose(initial_embed_params, final_lm_head_params)}"
-    )
-    logger.info(
-        f"Final embed params is equal to final lm head params: {torch.allclose(final_embed_params, final_lm_head_params)}"
-    )
     logger.info("done")
 
 

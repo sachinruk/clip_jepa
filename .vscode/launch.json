@@ -12,7 +12,7 @@
             "program": "${workspaceFolder}/src/main.py",
             "args": [
                 "--hyper-parameters-json",
-                "{\"debug\": true, \"batch_size\": 8, \"lora_config\": {\"use_qlora\": false}}"
+                "{\"debug\": true, \"batch_size\": 8, \"lora_config\": {\"use_qlora\": true}}"
             ]
         },
         {

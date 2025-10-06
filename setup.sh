@@ -58,9 +58,12 @@ if [ -d ".venv" ]; then
     fi
 else
     echo "Creating virtual environment..."
-    python -m venv .venv
+    python3 -m venv .venv
     source .venv/bin/activate
     echo "Installing packages from requirements.txt..."
     pip install -r requirements.txt
     echo "Virtual environment created successfully!"
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-cp310-cp310-linux_x86_64.whl
+    fi
 fi

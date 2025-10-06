@@ -9,7 +9,7 @@ loguru
 peft
 qwen_vl_utils
 ruff
-torch
+torch==2.8.0
 torchvision
 tqdm
 transformers
