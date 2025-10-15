@@ -4,7 +4,10 @@ from typing import Callable
 import datasets
 from loguru import logger
 from PIL import Image
+import torch
 from torch.utils.data import DataLoader
+from torchvision import transforms
+import transformers
 
 from src import config
 
@@ -14,6 +17,22 @@ def collate_fn(batch: list[dict[str, Image.Image | str]]) -> dict[str, list[Imag
         "images": [data_instance["image"] for data_instance in batch],
         "texts": [data_instance["caption"] for data_instance in batch],
     }
+
+
+class CollateFn:
+    def __init__(self, transform: transforms.Compose):
+        self.transform = transform
+
+    def __call__(
+        self, batch: list[dict[str, Image.Image | str]]
+    ) -> dict[str, list[str] | torch.Tensor]:
+        stacked_images = torch.stack([self.transform(item["image"]) for item in batch])
+        tokenized_text = [item["caption"] for item in batch]
+
+        return {
+            "images": stacked_images,
+            "texts": tokenized_text,
+        }
 
 
 def _get_dataloaders(

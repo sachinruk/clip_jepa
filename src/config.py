@@ -5,10 +5,20 @@ import pydantic
 
 class JepaConfig(pydantic.BaseModel):
     model_name: str = "Qwen/Qwen2.5-VL-3B-Instruct"
+    text_model_name: str = "Qwen/Qwen3-4B-Instruct-2507"
     max_pixels: int = 384 * 384
     embed_start_token: str = "<EMBED>"
     embed_end_token: str = "</EMBED>"
     max_length: int = 1024
+
+    class Config:
+        extra = "forbid"
+
+
+class VisionConfig(pydantic.BaseModel):
+    vision_model: str = "edgenext_small"
+    projection_layers: int = 3
+    embed_dims: int = 512
 
     class Config:
         extra = "forbid"

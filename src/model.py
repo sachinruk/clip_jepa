@@ -9,8 +9,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from transformers import (
-    Qwen2_5_VLForConditionalGeneration,
-    AutoProcessor,
+    AutoModelForCausalLM,
+    AutoTokenizer,
     BitsAndBytesConfig,
 )
 
@@ -21,8 +21,8 @@ from src import config
 class ModelComponents:
     """Container for model components."""
 
-    model: Qwen2_5_VLForConditionalGeneration
-    processor: AutoProcessor
+    model: AutoModelForCausalLM
+    tokenizer: AutoTokenizer
     jepa_config: config.JepaConfig
     embed_start_token_id: int
     embed_end_token_id: int
@@ -55,20 +55,20 @@ def init_model(
             bnb_4bit_quant_type="nf4",
         )
 
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+    model = AutoModelForCausalLM.from_pretrained(
         pretrained_model_name_or_path=jepa_config.model_name,
         quantization_config=quantization_config,
         dtype=torch.bfloat16 if device.type in {"cuda", "mps"} else torch.float32,
         attn_implementation="flash_attention_2" if device.type == "cuda" else "sdpa",
         device_map="auto",
     )
-    processor = AutoProcessor.from_pretrained(
+    tokenizer = AutoTokenizer.from_pretrained(
         jepa_config.model_name,
         max_pixels=jepa_config.max_pixels,
         max_length=jepa_config.max_length,
     )
 
-    processor.tokenizer.add_special_tokens(
+    tokenizer.add_special_tokens(
         {
             "additional_special_tokens": [
                 jepa_config.embed_start_token,
@@ -76,10 +76,10 @@ def init_model(
             ]
         }
     )
-    model.resize_token_embeddings(len(processor.tokenizer))
+    model.resize_token_embeddings(len(tokenizer))
 
-    embed_start_token_id = processor.tokenizer.convert_tokens_to_ids(jepa_config.embed_start_token)
-    embed_end_token_id = processor.tokenizer.convert_tokens_to_ids(jepa_config.embed_end_token)
+    embed_start_token_id = tokenizer.convert_tokens_to_ids(jepa_config.embed_start_token)
+    embed_end_token_id = tokenizer.convert_tokens_to_ids(jepa_config.embed_end_token)
 
     return ModelComponents(
         model=model,
@@ -146,22 +146,20 @@ def _encode_with_prediction(
         Normalized Embedding at the last valid token position [B, H]
     """
 
-    processed_text = model_components.processor.apply_chat_template(
+    processed_text = model_components.tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
-    image_inputs, video_inputs = qwen_vl_utils.process_vision_info(messages)
-    inputs = model_components.processor(
-        text=[
-            model_components.jepa_config.embed_start_token
-            + text
-            + model_components.jepa_config.embed_end_token
-            for text in processed_text
-        ],
-        images=image_inputs,
-        videos=video_inputs,
+    text = [
+        model_components.jepa_config.embed_start_token
+        + text
+        + model_components.jepa_config.embed_end_token
+        for text in processed_text
+    ]
+    inputs = model_components.tokenizer(
+        text=text,
         padding=True,
         return_tensors="pt",
-    ).to(model_components.model.device)
+    ).to(model_components.model.device)  # type: ignore
 
     out = model_components.model(**inputs, output_hidden_states=True)
     h_last = out.hidden_states[-1]  # [B, T+2, H]
