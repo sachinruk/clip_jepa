@@ -28,12 +28,12 @@ class CLIPJepaTrainer(L.LightningModule):
         text_embeddings = self.llm_projection(text_hidden_output)
         image_embeddings: torch.Tensor = self.vision_model(batch.images)
         loss: torch.Tensor = self.loss_fn(text_embeddings, image_embeddings)
-        img_acc, cap_acc = metrics.metrics(
-            image_embedding=image_embeddings, text_embedding=text_embeddings
+        img_acc, cap_acc = metrics.top_k_accuracy(
+            image_embedding=image_embeddings, text_embedding=text_embeddings, k=5
         )
 
         common_log_kwargs = {
-            "on_step": False,
+            "on_step": True,
             "on_epoch": True,
             "batch_size": len(batch),
             "prog_bar": True,
@@ -107,8 +107,8 @@ def get_trainer(hyper_parameters: config.HyperParameters, device: torch.device):
         logger=L.pytorch.loggers.WandbLogger(),
         log_every_n_steps=hyper_parameters.log_every_n_steps,
         gradient_clip_val=1.0,
-        limit_train_batches=5 if hyper_parameters.debug else 1.0,
-        limit_val_batches=5 if hyper_parameters.debug else 1.0,
+        limit_train_batches=200 if hyper_parameters.debug else 1.0,
+        limit_val_batches=100 if hyper_parameters.debug else 1.0,
         accelerator="auto",
         num_sanity_val_steps=0 if hyper_parameters.debug else 2,
         precision="bf16" if device.type in {"cuda", "mps"} else "32",

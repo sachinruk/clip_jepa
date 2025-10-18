@@ -36,7 +36,9 @@ class CollateFn:
         self.transform = transform
 
     def __call__(self, batch: list[dict[str, Image.Image | str]]) -> Batch:
-        stacked_images = torch.stack([self.transform(item["image"]) for item in batch])
+        stacked_images = torch.stack(
+            [self.transform(item["image"].convert("RGB")) for item in batch]
+        )
         texts: list[str] = [item["caption"] for item in batch]
 
         return Batch(images=stacked_images, texts=texts)

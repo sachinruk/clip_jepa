@@ -10,7 +10,10 @@ def contrastive_loss(logits: torch.Tensor, dim: int) -> torch.Tensor:
 
 def contrastive_sigmoid_loss(logits: torch.Tensor) -> torch.Tensor:
     return F.binary_cross_entropy_with_logits(
-        logits, torch.eye(len(logits)).to(logits.device), reduction="mean"
+        logits,
+        torch.eye(len(logits)).to(logits.device),
+        pos_weight=torch.tensor(len(logits) - 1).to(logits.device),
+        reduction="mean",
     )
 
 
@@ -71,7 +74,7 @@ class SigLIPLoss(nn.Module):
 
 
 class CySigLIPLoss(nn.Module):
-    def __init__(self, logit_temperature: float = -1.0):
+    def __init__(self, logit_temperature: float = -2.0):
         super().__init__()
         self.logit_temperature = nn.Parameter(torch.tensor(logit_temperature))
         self.lambda_1: float = 1.0

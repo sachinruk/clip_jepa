@@ -4,7 +4,6 @@ import timm
 from timm import data
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torchvision import transforms
 
 from src import config, model
