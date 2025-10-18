@@ -1,7 +1,9 @@
 import lightning as L
 import torch
 from torch import nn
-from PIL import Image
+from torchvision import transforms
+from tqdm.auto import tqdm
+import wandb
 
 from src import config, data, model, metrics
 
@@ -21,7 +23,7 @@ class CLIPJepaTrainer(L.LightningModule):
         self.vision_model = model_components.vision_model
         self.loss_fn = loss_fn
 
-    def common_step(self, batch: data.Batch, prefix: str) -> torch.Tensor:
+    def common_step(self, batch: data.Batch, prefix: str, batch_idx: int) -> torch.Tensor:
         text_hidden_output = model.embed_text(
             texts=batch.texts, model_components=self.model_components
         )
@@ -50,13 +52,21 @@ class CLIPJepaTrainer(L.LightningModule):
             **common_log_kwargs,
         )
 
+        if batch_idx == 0 and prefix == "valid":
+            _log_images(
+                batch,
+                text_embeddings @ image_embeddings.T,
+                self.model_components.inverse_transform,
+                self.current_epoch,
+            )
+
         return loss
 
     def training_step(self, batch: data.Batch, batch_idx: int) -> torch.Tensor:
-        return self.common_step(batch, "train")
+        return self.common_step(batch, "train", batch_idx)
 
     def validation_step(self, batch: data.Batch, batch_idx: int):
-        _ = self.common_step(batch, "valid")
+        _ = self.common_step(batch, "valid", batch_idx)
 
     def configure_optimizers(self):
         llm_trainable_params = [p for p in self.llm_model.parameters() if p.requires_grad]
@@ -107,9 +117,35 @@ def get_trainer(hyper_parameters: config.HyperParameters, device: torch.device):
         logger=L.pytorch.loggers.WandbLogger(),
         log_every_n_steps=hyper_parameters.log_every_n_steps,
         gradient_clip_val=1.0,
-        limit_train_batches=200 if hyper_parameters.debug else 1.0,
+        limit_train_batches=2 if hyper_parameters.debug else 1.0,
         limit_val_batches=100 if hyper_parameters.debug else 1.0,
         accelerator="auto",
         num_sanity_val_steps=0 if hyper_parameters.debug else 2,
         precision="bf16" if device.type in {"cuda", "mps"} else "32",
+    )
+
+
+def _log_images(
+    batch: data.Batch,
+    similarity_matrix: torch.Tensor,
+    inverse_transform: transforms.Normalize,
+    epoch: int,
+):
+    closest_image_indices = similarity_matrix.argmax(dim=-1)
+    to_pil = transforms.ToPILImage()
+    table = wandb.Table(
+        columns=["text", "image", "similarity"],
+        data=[
+            [
+                text,
+                wandb.Image(to_pil(inverse_transform(batch.images[image_index]).cpu())),
+                similarity_matrix[i, image_index].item(),
+            ]
+            for i, (text, image_index) in tqdm(enumerate(zip(batch.texts, closest_image_indices)))
+        ],
+    )
+    wandb.log(
+        {
+            f"clip_jepa_images_{epoch}": table,
+        }
     )
