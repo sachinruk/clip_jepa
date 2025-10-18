@@ -7,7 +7,7 @@ from loguru import logger
 import lightning as L
 import wandb
 
-from src import config, data, losses, model, trainer
+from src import config, data, losses, model, trainer, vision_model
 
 
 def _wandb_init(hyper_parameters: config.HyperParameters):
@@ -61,8 +61,8 @@ def main(hyper_parameters_json: str):
     # Parse hyperparameters
     logger.info("Parsing hyperparameters...")
     hyper_parameters = config.HyperParameters.model_validate_json(hyper_parameters_json)
-    logger.info(f"Hyperparameters: {hyper_parameters.model_dump_json(indent=2)}")
     _wandb_init(hyper_parameters)
+    logger.info(f"Hyperparameters: {hyper_parameters.model_dump_json(indent=2)}")
     _setup_environment(hyper_parameters)
 
     if torch.cuda.is_available():
@@ -73,32 +73,39 @@ def main(hyper_parameters_json: str):
         device = torch.device("cpu")
     logger.info(f"Using device: {device}")
 
+    clip_vision_model, vision_transform, inverse_transform = vision_model.get_vision_model(
+        hyper_parameters.vision_model_config
+    )
+
     logger.info("Loading datasets...")
-    train_loader, valid_loader = data.get_dataset(hyper_parameters)
+    train_loader, valid_loader = data.get_dataset(hyper_parameters, vision_transform)
     logger.info(f"Train batches: {len(train_loader)}, Valid batches: {len(valid_loader)}")
 
     use_qlora = hyper_parameters.lora_config.use_qlora
     model_components = model.init_model(
         jepa_config=hyper_parameters.llm_model_config,
+        vision_model=clip_vision_model,
+        inverse_transform=inverse_transform,
         device=device,
         use_qlora=use_qlora,
     )
 
-    model_components.model.delta_on_embedding = model.DeltaOnEmbedding(
+    input_embeddings: torch.Tensor = model_components.llm_model.get_input_embeddings().weight.detach()
+    model_components.llm_model.delta_on_embedding = model.DeltaOnEmbedding(
         start_id=model_components.embed_start_token_id,
         end_id=model_components.embed_end_token_id,
-        hidden_size=model_components.model.get_input_embeddings().weight.shape[1],
-        init_std=model_components.model.get_input_embeddings().weight.std().item(),
+        hidden_size=input_embeddings.shape[1],
+        init_std=input_embeddings.std().item(),
         device=device,
     )
-    model_components.model.get_input_embeddings().register_forward_hook(
-        model_components.model.delta_on_embedding.hook
+    model_components.llm_model.get_input_embeddings().register_forward_hook(
+        model_components.llm_model.delta_on_embedding.hook
     )
     hyper_parameters.lora_config.modules_to_save.append("delta_on_embedding")
 
     logger.info(f"Applying {'QLoRA' if use_qlora else 'LoRA'} adapters...")
-    model_components.model = model.get_lora_model(
-        model_components.model,
+    model_components.llm_model = model.get_lora_model(
+        model_components.llm_model,
         hyper_parameters,
     )
 

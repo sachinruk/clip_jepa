@@ -3,12 +3,12 @@ from torch import nn
 import torch.nn.functional as F
 
 
-def contrastive_loss(logits, dim):
+def contrastive_loss(logits: torch.Tensor, dim: int) -> torch.Tensor:
     neg_ce = torch.diag(F.log_softmax(logits, dim=dim))
     return -neg_ce.mean()
 
 
-def contrastive_sigmoid_loss(logits):
+def contrastive_sigmoid_loss(logits: torch.Tensor) -> torch.Tensor:
     return F.binary_cross_entropy_with_logits(
         logits, torch.eye(len(logits)).to(logits.device), reduction="mean"
     )

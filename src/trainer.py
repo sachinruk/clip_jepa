@@ -1,38 +1,41 @@
-import datetime
-
 import lightning as L
 import torch
 from torch import nn
 from PIL import Image
 
-from src import config, model, metrics
+from src import config, data, model, metrics
 
 
 class CLIPJepaTrainer(L.LightningModule):
     def __init__(
         self,
         hyper_parameters: config.HyperParameters,
-        model_components: model.ModelComponents,
+        model_components: config.ModelComponents,
         loss_fn: nn.Module,
     ):
         super().__init__()
         self.hyper_parameters = hyper_parameters
         self.model_components = model_components
+        self.llm_model = model_components.llm_model
+        self.llm_projection = model_components.llm_projection
+        self.vision_model = model_components.vision_model
         self.loss_fn = loss_fn
 
-    def common_step(self, batch: dict[str, list[str] | list[Image.Image]], prefix: str):
-        text = batch["texts"]
-        images = batch["images"]
-        text_embeddings = model.embed_text(text, self.model_components)
-        image_embeddings = model.embed_image(images, self.model_components)
-        loss = self.loss_fn(text_embeddings, image_embeddings)
-        img_acc, cap_acc = metrics.metrics(image_embeddings, text_embeddings)
+    def common_step(self, batch: data.Batch, prefix: str) -> torch.Tensor:
+        text_hidden_output = model.embed_text(
+            texts=batch.texts, model_components=self.model_components
+        )
+        text_embeddings = self.llm_projection(text_hidden_output)
+        image_embeddings: torch.Tensor = self.vision_model(batch.images)
+        loss: torch.Tensor = self.loss_fn(text_embeddings, image_embeddings)
+        img_acc, cap_acc = metrics.metrics(
+            image_embedding=image_embeddings, text_embedding=text_embeddings
+        )
 
-        batch_size = len(text)
         common_log_kwargs = {
             "on_step": False,
             "on_epoch": True,
-            "batch_size": batch_size,
+            "batch_size": len(batch),
             "prog_bar": True,
         }
         self.log(f"{prefix}_loss", loss, **common_log_kwargs)
@@ -49,25 +52,34 @@ class CLIPJepaTrainer(L.LightningModule):
 
         return loss
 
-    def training_step(self, batch: dict[str, list[str] | list[Image.Image]], batch_idx: int):
+    def training_step(self, batch: data.Batch, batch_idx: int) -> torch.Tensor:
         return self.common_step(batch, "train")
 
-    def validation_step(self, batch: dict[str, list[str] | list[Image.Image]], batch_idx: int):
+    def validation_step(self, batch: data.Batch, batch_idx: int):
         _ = self.common_step(batch, "valid")
 
     def configure_optimizers(self):
-        # Only LoRA (and any separate loss head) params
-        trainable = [p for p in self.model_components.model.parameters() if p.requires_grad]
-        # If you also want to train a custom loss head, include it here:
-        loss_params = (
-            list(self.loss_fn.parameters())
-            if any(p.requires_grad for p in self.loss_fn.parameters())
-            else []
-        )
+        llm_trainable_params = [p for p in self.llm_model.parameters() if p.requires_grad]
+        llm_projection_trainable_params = list(self.llm_projection.parameters())
+        vision_base_trainable_params = list(self.vision_model.base.parameters())
+        vision_projection_trainable_params = list(self.vision_model.projection.parameters())
+
+        loss_params = list(self.loss_fn.parameters())
 
         optimizer = torch.optim.AdamW(
             [
-                {"params": trainable, "lr": self.hyper_parameters.learning_rate},
+                {
+                    "params": llm_trainable_params + llm_projection_trainable_params,
+                    "lr": self.hyper_parameters.learning_rate,
+                },
+                {
+                    "params": vision_base_trainable_params,
+                    "lr": self.hyper_parameters.learning_rate / 10,
+                },
+                {
+                    "params": vision_projection_trainable_params,
+                    "lr": self.hyper_parameters.learning_rate,
+                },
                 {"params": loss_params, "lr": self.hyper_parameters.learning_rate / 10},
             ]
         )
@@ -85,8 +97,8 @@ class CLIPJepaTrainer(L.LightningModule):
     def on_save_checkpoint(self, checkpoint):
         # Save adapters into a folder, e.g., self.trainer.logger.log_dir or a hyperparam path
         # Works for both PeftModel and nonwrapped (no-op) if you guard it:
-        if hasattr(self.model_components.model, "save_pretrained"):
-            self.model_components.model.save_pretrained(self.hyper_parameters.output_dir)
+        if hasattr(self.llm_model, "save_pretrained"):
+            self.llm_model.save_pretrained(self.hyper_parameters.output_dir)
 
 
 def get_trainer(hyper_parameters: config.HyperParameters, device: torch.device):

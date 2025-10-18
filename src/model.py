@@ -1,38 +1,53 @@
 from typing import Any
-from dataclasses import dataclass
 
 from loguru import logger
 import peft
 from PIL import Image
-import qwen_vl_utils
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    BitsAndBytesConfig,
-)
+import transformers
+from transformers.utils.quantization_config import BitsAndBytesConfig
+from torchvision import transforms
 
 from src import config
 
 
-@dataclass
-class ModelComponents:
-    """Container for model components."""
+class Projection(nn.Module):
+    def __init__(self, d_in: int, d_out: int, p: float = 0.5) -> None:
+        super().__init__()
+        self.linear1 = nn.Linear(d_in, d_out, bias=False)
+        self.linear2 = nn.Linear(d_out, d_out, bias=False)
+        self.layer_norm = nn.LayerNorm(d_out)
+        self.drop = nn.Dropout(p)
 
-    model: AutoModelForCausalLM
-    tokenizer: AutoTokenizer
-    jepa_config: config.JepaConfig
-    embed_start_token_id: int
-    embed_end_token_id: int
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        embed1 = self.linear1(x)
+        embed2 = self.drop(self.linear2(F.silu(embed1)))
+        embeds = self.layer_norm(embed1 + embed2)
+        return embeds
+
+
+class ProjectionLayers(nn.Module):
+    def __init__(self, d_in: int, d_out: int, num_layers: int) -> None:
+        super().__init__()
+        layers: list[nn.Module] = []
+        for _ in range(num_layers - 1):
+            layers.extend([Projection(d_in, d_in), nn.SiLU()])
+        layers += [Projection(d_in, d_out)]
+        self.projection = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.normalize(self.projection(x), dim=-1)
 
 
 def init_model(
     jepa_config: config.JepaConfig,
+    vision_model: nn.Module,
+    inverse_transform: transforms.Normalize,
     device: torch.device,
     use_qlora: bool = False,
-) -> ModelComponents:
+) -> config.ModelComponents:
     """
     Initialize the CLIP-JEPA model and processor.
 
@@ -55,17 +70,24 @@ def init_model(
             bnb_4bit_quant_type="nf4",
         )
 
-    model = AutoModelForCausalLM.from_pretrained(
-        pretrained_model_name_or_path=jepa_config.model_name,
-        quantization_config=quantization_config,
-        dtype=torch.bfloat16 if device.type in {"cuda", "mps"} else torch.float32,
-        attn_implementation="flash_attention_2" if device.type == "cuda" else "sdpa",
-        device_map="auto",
+    llm_model: transformers.modeling_utils.PreTrainedModel = (
+        transformers.AutoModelForCausalLM.from_pretrained(
+            pretrained_model_name_or_path=jepa_config.model_name,
+            quantization_config=quantization_config,
+            dtype=torch.bfloat16 if device.type in {"cuda", "mps"} else torch.float32,
+            attn_implementation="flash_attention_2" if device.type == "cuda" else "sdpa",
+            device_map="auto",
+        )
     )
-    tokenizer = AutoTokenizer.from_pretrained(
-        jepa_config.model_name,
-        max_pixels=jepa_config.max_pixels,
-        max_length=jepa_config.max_length,
+    llm_projection = ProjectionLayers(
+        llm_model.config.hidden_size, jepa_config.embed_dims, jepa_config.projection_layers
+    )
+    tokenizer: transformers.tokenization_utils.PreTrainedTokenizer = (
+        transformers.AutoTokenizer.from_pretrained(
+            jepa_config.model_name,
+            max_pixels=jepa_config.max_pixels,
+            max_length=jepa_config.max_length,
+        )
     )
 
     tokenizer.add_special_tokens(
@@ -76,14 +98,17 @@ def init_model(
             ]
         }
     )
-    model.resize_token_embeddings(len(tokenizer))
+    llm_model.resize_token_embeddings(len(tokenizer))
 
-    embed_start_token_id = tokenizer.convert_tokens_to_ids(jepa_config.embed_start_token)
-    embed_end_token_id = tokenizer.convert_tokens_to_ids(jepa_config.embed_end_token)
+    embed_start_token_id: int = tokenizer.convert_tokens_to_ids(jepa_config.embed_start_token)
+    embed_end_token_id: int = tokenizer.convert_tokens_to_ids(jepa_config.embed_end_token)
 
-    return ModelComponents(
-        model=model,
-        processor=processor,
+    return config.ModelComponents(
+        llm_model=llm_model,
+        llm_projection=llm_projection,
+        tokenizer=tokenizer,
+        vision_model=vision_model,
+        inverse_transform=inverse_transform,
         jepa_config=jepa_config,
         embed_start_token_id=embed_start_token_id,
         embed_end_token_id=embed_end_token_id,
@@ -92,45 +117,7 @@ def init_model(
 
 def embed_text(
     texts: list[str],
-    model_components: ModelComponents,
-) -> torch.Tensor:
-    """
-    Embed text using the CLIP-JEPA model.
-
-    Args:
-        texts: List of text strings to embed
-        model_components: ModelComponents containing model, processor, and config
-
-    Returns:
-        Normalized embeddings [B, H]
-    """
-    messages = [[{"role": "user", "content": [{"type": "text", "text": text}]}] for text in texts]
-    return _encode_with_prediction(messages, model_components)
-
-
-def embed_image(
-    images: list[Image.Image],
-    model_components: ModelComponents,
-) -> torch.Tensor:
-    """
-    Embed images using the CLIP-JEPA model.
-
-    Args:
-        images: List of PIL images to embed
-        model_components: ModelComponents containing model, processor, and config
-
-    Returns:
-        Normalized embeddings [B, H]
-    """
-    messages = [
-        [{"role": "user", "content": [{"type": "image", "image": image}]}] for image in images
-    ]
-    return _encode_with_prediction(messages, model_components)
-
-
-def _encode_with_prediction(
-    messages: list[dict[str, Any]],
-    model_components: ModelComponents,
+    model_components: config.ModelComponents,
 ) -> torch.Tensor:
     """
     Encode text and extract embedding at the last valid token position.
@@ -145,11 +132,11 @@ def _encode_with_prediction(
     Returns:
         Normalized Embedding at the last valid token position [B, H]
     """
-
-    processed_text = model_components.tokenizer.apply_chat_template(
+    messages = [[{"role": "user", "content": [{"type": "text", "text": text}]}] for text in texts]
+    processed_text: list[str] = model_components.tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
     )
-    text = [
+    text: list[str] = [
         model_components.jepa_config.embed_start_token
         + text
         + model_components.jepa_config.embed_end_token
@@ -159,22 +146,18 @@ def _encode_with_prediction(
         text=text,
         padding=True,
         return_tensors="pt",
-    ).to(model_components.model.device)  # type: ignore
+    ).to(model_components.llm_model.device)  # type: ignore
 
-    out = model_components.model(**inputs, output_hidden_states=True)
-    h_last = out.hidden_states[-1]  # [B, T+2, H]
+    out = model_components.llm_model(**inputs, output_hidden_states=True)
+    h_last: torch.Tensor = out.hidden_states[-1]  # [B, T+2, H]
     last_idx = inputs["input_ids"] == model_components.embed_end_token_id
-    embedding = h_last[last_idx]  # [B, H]
-    # logger.info(f"Last hidden of {'image' if image_inputs else 'text'} state shape: {h_last.shape}")
-    # if len(embedding) != len(messages):
-    #     logger.warning(f"Embedding length mismatch: {len(embedding)} != {len(messages)}")
-    return F.normalize(embedding, dim=-1)
+    return h_last[last_idx]  # [B, H]
 
 
 def get_lora_model(
-    model: Qwen2_5_VLForConditionalGeneration,
+    model: transformers.modeling_utils.PreTrainedModel,
     hyper_parameters: config.HyperParameters,
-) -> Qwen2_5_VLForConditionalGeneration:
+) -> transformers.modeling_utils.PreTrainedModel:
     """
     Apply LoRA or QLoRA to the model.
 
@@ -208,31 +191,6 @@ def get_lora_model(
     return lora_model
 
 
-class GradMaskHook:
-    def __init__(
-        self,
-        embed_start_token_id: int,
-        embed_end_token_id: int,
-        embed_shape: tuple[int, int],
-        device: torch.device,
-    ):
-        self.embed_start_token_id = embed_start_token_id
-        self.embed_end_token_id = embed_end_token_id
-        self.mask = torch.zeros(embed_shape, dtype=torch.bool, device=device)
-        self.mask[embed_start_token_id] = True
-        self.mask[embed_end_token_id] = True
-        self.device = device
-
-    def __call__(self, grad: torch.Tensor) -> torch.Tensor:
-        return grad * self.mask.to(grad.dtype)
-
-
-def embedding_zero_grad(lora_model: Qwen2_5_VLForConditionalGeneration, grad_hook: GradMaskHook):
-    embed = lora_model.get_input_embeddings()
-    embed.weight.requires_grad_(True)
-    embed.weight.register_hook(grad_hook)
-
-
 class DeltaOnEmbedding(nn.Module):
     """
     Adds a (2, H) delta to the *output* of the input embedding only where
@@ -245,20 +203,17 @@ class DeltaOnEmbedding(nn.Module):
         end_id: int,
         hidden_size: int,
         init_std: float = 0.02,
-        dtype=None,
-        device=None,
+        dtype: torch.dtype | None = None,
+        device: torch.device | None = None,
     ):
         super().__init__()
-        self.start_id = int(start_id)
-        self.end_id = int(end_id)
+        self.start_id = start_id
+        self.end_id = end_id
         self.delta = nn.Parameter(torch.zeros(2, hidden_size, dtype=dtype, device=device))
         nn.init.normal_(self.delta, mean=0.0, std=init_std)
-        logger.info(
-            f"Adding {self.delta.numel()} trainable parameters from DeltaOnEmbedding module."
-        )
 
     def hook(
-        self, embed_module: nn.Embedding, inputs: tuple[torch.Tensor, ...], output: torch.Tensor
+        self, _: nn.Embedding, inputs: tuple[torch.Tensor, ...], output: torch.Tensor
     ) -> torch.Tensor:
         """
         Registered as a forward hook on the input embedding module.

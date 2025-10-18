@@ -1,3 +1,5 @@
+from typing import Any
+
 import timm
 from timm import data
 import torch
@@ -5,21 +7,24 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import transforms
 
-from src import config
+from src import config, model
 
 
 def get_vision_base(
     config: config.VisionConfig,
-) -> tuple[nn.Module, int]:
-    base = timm.create_model(config.vision_model, num_classes=0, pretrained=True)
-    num_features = base.num_features
-    return base, num_features
+) -> tuple[nn.Module, int, transforms.Compose]:
+    base: nn.Module = timm.create_model(config.vision_model, num_classes=0, pretrained=True)
 
+    # Get actual output dimension by doing a forward pass with a dummy tensor
+    # This is more reliable than base.num_features for some models
+    with torch.no_grad():
+        timm_config: dict[str, Any] = data.resolve_data_config({}, model=base)
+        sample_input = torch.randn(2, *timm_config["input_size"])
+        sample_output: torch.Tensor = base(sample_input)
+        num_features = sample_output.shape[-1]
 
-def get_vision_transform(config: config.VisionConfig) -> transforms.Compose:
-    timm_config = data.resolve_data_config({}, model=config.vision_model)
     transform = data.transforms_factory.create_transform(**timm_config)
-    return transform  # type: ignore
+    return base, num_features, transform
 
 
 def get_inverse_transform(
@@ -35,44 +40,22 @@ def get_inverse_transform(
     raise ValueError("No Normalize transform found in the transform chain")
 
 
-class Projection(nn.Module):
-    def __init__(self, d_in: int, d_out: int, p: float = 0.5) -> None:
+class VisionModel(nn.Module):
+    def __init__(self, base: nn.Module, projection: nn.Module) -> None:
         super().__init__()
-        self.linear1 = nn.Linear(d_in, d_out, bias=False)
-        self.linear2 = nn.Linear(d_out, d_out, bias=False)
-        self.layer_norm = nn.LayerNorm(d_out)
-        self.drop = nn.Dropout(p)
+        self.base = base
+        self.projection = projection
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        embed1 = self.linear1(x)
-        embed2 = self.drop(self.linear2(F.gelu(embed1)))
-        embeds = self.layer_norm(embed1 + embed2)
-        return embeds
-
-
-class Normalize(nn.Module):
-    def __init__(self, dim: int = -1) -> None:
-        super().__init__()
-        self.dim = dim
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.normalize(x, dim=self.dim)
-
-
-def projection_layers(d_in: int, d_out: int, num_layers: int) -> list[nn.Module]:
-    layers = []
-    for _ in range(num_layers - 1):
-        layers.extend([Projection(d_in, d_in), nn.GELU()])
-    layers += [Projection(d_in, d_out)]
-    return layers
+        x = self.base(x)
+        return self.projection(x)
 
 
 def get_vision_model(
     config: config.VisionConfig,
 ) -> tuple[nn.Module, transforms.Compose, transforms.Normalize]:
-    base, num_features = get_vision_base(config)
-    projection = projection_layers(num_features, config.embed_dims, config.projection_layers)
-    vision_model = nn.Sequential(*[base, *projection, Normalize(dim=-1)])
-    transform = get_vision_transform(config)
+    base, num_features, transform = get_vision_base(config)
+    projection = model.ProjectionLayers(num_features, config.embed_dims, config.projection_layers)
+    vision_model = VisionModel(base, projection)
     inverse_transform = get_inverse_transform(transform)
     return vision_model, transform, inverse_transform

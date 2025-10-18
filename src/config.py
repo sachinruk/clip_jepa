@@ -1,22 +1,29 @@
+import dataclasses
 import pathlib
 
 import pydantic
 
+import torch.nn as nn
+import transformers
+from torchvision import transforms
+
 
 class JepaConfig(pydantic.BaseModel):
-    model_name: str = "Qwen/Qwen2.5-VL-3B-Instruct"
-    text_model_name: str = "Qwen/Qwen3-4B-Instruct-2507"
+    # model_name: str = "Qwen/Qwen2.5-VL-3B-Instruct"
+    model_name: str = "Qwen/Qwen3-4B-Instruct-2507"
     max_pixels: int = 384 * 384
     embed_start_token: str = "<EMBED>"
     embed_end_token: str = "</EMBED>"
     max_length: int = 1024
+    projection_layers: int = 3
+    embed_dims: int = 512
 
     class Config:
         extra = "forbid"
 
 
 class VisionConfig(pydantic.BaseModel):
-    vision_model: str = "edgenext_small"
+    vision_model: str = "mobilenetv4_hybrid_medium.ix_e550_r256_in1k"  # Better MPS compatibility
     projection_layers: int = 3
     embed_dims: int = 512
 
@@ -50,7 +57,7 @@ class LoraConfig(pydantic.BaseModel):
         "down_proj",
     ]
     lora_weight_path: pathlib.Path = pathlib.Path("/tmp/lora")
-    modules_to_save: None | list[str] = ["embed_tokens"]
+    modules_to_save: list[str] = []
 
 
 class DataConfig(pydantic.BaseModel):
@@ -71,6 +78,7 @@ class HyperParameters(pydantic.BaseModel):
     temperature: float = -1.0
     log_every_n_steps: int = 50
     llm_model_config: JepaConfig = JepaConfig()
+    vision_model_config: VisionConfig = VisionConfig()
     wandb_config: WandbConfig = WandbConfig()
     lora_config: LoraConfig = LoraConfig()
     data_config: DataConfig = DataConfig()
@@ -79,3 +87,15 @@ class HyperParameters(pydantic.BaseModel):
 
     class Config:
         extra = "forbid"
+
+
+@dataclasses.dataclass
+class ModelComponents:
+    llm_model: transformers.modeling_utils.PreTrainedModel
+    llm_projection: nn.Module
+    tokenizer: transformers.tokenization_utils.PreTrainedTokenizer
+    vision_model: nn.Module
+    inverse_transform: transforms.Normalize
+    jepa_config: JepaConfig
+    embed_start_token_id: int
+    embed_end_token_id: int

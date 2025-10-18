@@ -1,0 +1,5 @@
+{
+    "reportUnusedCallResult": "none",
+    "reportUnannotatedClassAttribute": "none",
+    "reportImplicitOverride": "none"
+}
